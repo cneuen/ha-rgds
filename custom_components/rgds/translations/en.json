@@ -1,0 +1,33 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "R-GDS — sign in",
+        "description": "Enter your R-GDS monespace portal credentials.",
+        "data": { "username": "Email address", "password": "Password" }
+      },
+      "meter": {
+        "title": "R-GDS — meter",
+        "description": "Choose the meter to integrate.",
+        "data": { "pce_id": "Meter" }
+      }
+    },
+    "error": {
+      "invalid_auth": "Invalid credentials.",
+      "cannot_connect": "Cannot connect to R-GDS.",
+      "no_meters": "No meter found on this account."
+    },
+    "abort": { "already_configured": "This meter is already configured." }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "R-GDS options",
+        "data": {
+          "smoothing": "Smoothed data (otherwise real values, rounded to m³)",
+          "include_subscription": "Include standing charge in cost (prorated)"
+        }
+      }
+    }
+  }
+}

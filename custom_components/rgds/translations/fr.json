@@ -1,0 +1,40 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "R-GDS — connexion",
+        "description": "Saisissez vos identifiants du portail monespace R-GDS.",
+        "data": {
+          "username": "Adresse e-mail",
+          "password": "Mot de passe"
+        }
+      },
+      "meter": {
+        "title": "R-GDS — compteur",
+        "description": "Choisissez le compteur à intégrer.",
+        "data": {
+          "pce_id": "Compteur"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Identifiants invalides.",
+      "cannot_connect": "Connexion à R-GDS impossible.",
+      "no_meters": "Aucun compteur trouvé sur ce compte."
+    },
+    "abort": {
+      "already_configured": "Ce compteur est déjà configuré."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Options R-GDS",
+        "data": {
+          "smoothing": "Données lissées (sinon valeurs réelles, arrondies au m³)",
+          "include_subscription": "Inclure l'abonnement dans le coût (au prorata)"
+        }
+      }
+    }
+  }
+}

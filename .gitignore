@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# IDE
+.idea/
+.vscode/
+
+# Logs / divers
+*.log
+
+# Données personnelles — NE PAS publier (historique de conso de l'utilisateur)
+archive/

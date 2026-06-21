@@ -15,5 +15,3 @@ jobs:
       - uses: hacs/action@main
         with:
           category: integration
-          # 'brands' ignoré tant que la PR home-assistant/brands n'est pas mergée
-          ignore: brands

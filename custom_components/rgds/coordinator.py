@@ -82,11 +82,34 @@ class RgdsCoordinator(DataUpdateCoordinator[dict]):
         await self._insert_statistics(prices, tariff)
 
         last_reading = await self._last_real_reading()
+        monthly = await self._month_totals()
         return {
             "tariff": tariff,
             "yearly": yearly,
             "last_reading": last_reading,
             "current_price": tariff.current_kwh_price_ttc,
+            "monthly_volume": monthly["volume"],
+            "monthly_energy": monthly["energy"],
+            "monthly_cost": monthly["cost"],
+        }
+
+    async def _month_totals(self) -> dict[str, float | None]:
+        """Consommation du mois en cours (delta des statistiques sur le mois)."""
+        now = datetime.now(PARIS)
+        start = datetime(now.year, now.month, 1, 0, 0, tzinfo=PARIS)
+        stats = await get_instance(self.hass).async_add_executor_job(
+            statistics_during_period, self.hass, start, None,
+            {self.stat_volume, self.stat_energy, self.stat_cost}, "month", None, {"change"},
+        )
+
+        def chg(sid: str) -> float | None:
+            rows = stats.get(sid, [])
+            return round(sum((r.get("change") or 0) for r in rows), 3) if rows else None
+
+        return {
+            "volume": chg(self.stat_volume),
+            "energy": chg(self.stat_energy),
+            "cost": chg(self.stat_cost),
         }
 
     # ------------------------------------------------------------------ #

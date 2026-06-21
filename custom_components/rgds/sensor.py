@@ -82,6 +82,26 @@ SENSORS: tuple[RgdsSensorDescription, ...] = (
         state_class=SensorStateClass.TOTAL,
         value_fn=lambda d: getattr(d.get("yearly"), "energy_kwh", None),
     ),
+    # Conso du mois en cours (capteurs d'affichage : pas de state_class pour ne
+    # pas générer de statistiques redondantes avec rgds:*).
+    RgdsSensorDescription(
+        key="monthly_volume",
+        name="Consommation mensuelle",
+        native_unit_of_measurement=UnitOfVolume.CUBIC_METERS,
+        value_fn=lambda d: d.get("monthly_volume"),
+    ),
+    RgdsSensorDescription(
+        key="monthly_energy",
+        name="Énergie mensuelle",
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        value_fn=lambda d: d.get("monthly_energy"),
+    ),
+    RgdsSensorDescription(
+        key="monthly_cost",
+        name="Coût mensuel",
+        native_unit_of_measurement=CURRENCY_EURO,
+        value_fn=lambda d: d.get("monthly_cost"),
+    ),
 )
 
 

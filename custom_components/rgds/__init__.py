@@ -5,7 +5,6 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import aiohttp_client
-from homeassistant.helpers.event import async_track_time_change
 
 from .api import RgdsApiClient
 from .const import (
@@ -20,7 +19,7 @@ from .const import (
     DEFAULT_SMOOTHING,
     DOMAIN,
 )
-from .coordinator import REFRESH_HOUR, RgdsCoordinator
+from .coordinator import RgdsCoordinator
 
 PLATFORMS: list[Platform] = [Platform.SENSOR]
 
@@ -47,17 +46,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-
-    # Rafraîchissement quotidien à 23h (après la publication R-GDS du soir),
-    # en plus du refresh au démarrage (async_config_entry_first_refresh ci-dessus).
-    async def _scheduled_refresh(now) -> None:
-        await coordinator.async_request_refresh()
-
-    entry.async_on_unload(
-        async_track_time_change(
-            hass, _scheduled_refresh, hour=REFRESH_HOUR, minute=0, second=0
-        )
-    )
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
     return True
 

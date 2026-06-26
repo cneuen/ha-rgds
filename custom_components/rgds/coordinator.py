@@ -29,9 +29,10 @@ _LOGGER = logging.getLogger(__name__)
 # pour capter les révisions rétroactives de R-GDS sur les mois récents.
 BACKFILL_YEARS = 11
 REFRESH_DAYS = 40
-# Pas d'intervalle rolling : refresh au démarrage + tous les soirs à 23h
-# (cf. __init__.py), car la donnée R-GDS n'est publiée qu'une fois/jour (J+1 soir).
-REFRESH_HOUR = 23
+# Rafraîchissement toutes les heures (R-GDS publie à des heures variables dans
+# la journée ; un poll horaire capte la nouvelle journée rapidement). + refresh
+# au démarrage (async_config_entry_first_refresh).
+UPDATE_INTERVAL = timedelta(hours=1)
 
 
 class RgdsCoordinator(DataUpdateCoordinator[dict]):
@@ -47,7 +48,7 @@ class RgdsCoordinator(DataUpdateCoordinator[dict]):
         smoothing: bool = True,
         include_subscription: bool = False,
     ) -> None:
-        super().__init__(hass, _LOGGER, name=DOMAIN, update_interval=None)
+        super().__init__(hass, _LOGGER, name=DOMAIN, update_interval=UPDATE_INTERVAL)
         self.client = client
         self._sub = subscription_id
         self._pce = pce_id

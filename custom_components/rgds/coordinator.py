@@ -94,7 +94,7 @@ class RgdsCoordinator(DataUpdateCoordinator[dict]):
             "monthly_cost": monthly["cost"],
         }
 
-    async def _month_totals(self) -> dict[str, float | None]:
+    async def _month_totals(self) -> dict[str, float]:
         """Consommation du mois en cours (delta des statistiques sur le mois)."""
         now = datetime.now(PARIS)
         start = datetime(now.year, now.month, 1, 0, 0, tzinfo=PARIS)
@@ -103,9 +103,12 @@ class RgdsCoordinator(DataUpdateCoordinator[dict]):
             {self.stat_volume, self.stat_energy, self.stat_cost}, "month", None, {"change"},
         )
 
-        def chg(sid: str) -> float | None:
+        def chg(sid: str) -> float:
+            # Cumul du mois en cours. Aucune ligne encore (début de mois, avant
+            # que R-GDS ait publié le 1er jour) -> 0.0 et non « inconnu » : c'est
+            # un compteur mensuel qui démarre à 0 puis grimpe (pas une fabrication).
             rows = stats.get(sid, [])
-            return round(sum((r.get("change") or 0) for r in rows), 3) if rows else None
+            return round(sum((r.get("change") or 0) for r in rows), 3)
 
         return {
             "volume": chg(self.stat_volume),

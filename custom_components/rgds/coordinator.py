@@ -19,6 +19,7 @@ from homeassistant.const import CURRENCY_EURO, UnitOfEnergy, UnitOfVolume
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
+from homeassistant.util import slugify
 
 from .api import RgdsApiClient, RgdsAuthError, Reading
 from .const import DOMAIN, PARIS
@@ -54,7 +55,11 @@ class RgdsCoordinator(DataUpdateCoordinator[dict]):
         self._pce = pce_id
         self._smoothing = smoothing
         self._include_sub = include_subscription
-        slug = meter_ref or pce_id.replace("-", "")
+        # Le statistic_id HA doit être strictement minuscule [a-z0-9_] : on
+        # slugifie la réf compteur (une majuscule/un accent/un espace -> sinon
+        # « Invalid statistic_id »). Une réf déjà valide (ex. « 44240992 ») est
+        # inchangée -> rétro-compatible avec les installs existantes.
+        slug = slugify(meter_ref) or pce_id.replace("-", "").lower()
         self.stat_volume = f"{DOMAIN}:{slug}_volume"
         self.stat_energy = f"{DOMAIN}:{slug}_energy"
         self.stat_cost = f"{DOMAIN}:{slug}_cost"

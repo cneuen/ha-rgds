@@ -145,3 +145,16 @@ class RgdsSensor(CoordinatorEntity[RgdsCoordinator], SensorEntity):
     @property
     def native_value(self):
         return self.entity_description.value_fn(self.coordinator.data or {})
+
+    @property
+    def extra_state_attributes(self) -> dict | None:
+        """Signale un coût mensuel estimé (prix du mois pas encore publié)."""
+        if self.entity_description.key != "monthly_cost":
+            return None
+        data = self.coordinator.data or {}
+        if not data.get("monthly_cost_estimated"):
+            return {"prix_estime": False}
+        return {
+            "prix_estime": True,
+            "prix_utilise_eur_kwh": data.get("monthly_cost_price"),
+        }

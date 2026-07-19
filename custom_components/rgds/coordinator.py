@@ -88,7 +88,7 @@ class RgdsCoordinator(DataUpdateCoordinator[dict]):
         await self._insert_statistics(prices, tariff)
 
         last_reading = await self._last_real_reading()
-        monthly = await self._month_totals()
+        monthly = await self._month_totals(prices)
         return {
             "tariff": tariff,
             "yearly": yearly,
@@ -97,9 +97,11 @@ class RgdsCoordinator(DataUpdateCoordinator[dict]):
             "monthly_volume": monthly["volume"],
             "monthly_energy": monthly["energy"],
             "monthly_cost": monthly["cost"],
+            "monthly_cost_estimated": monthly["estimated"],
+            "monthly_cost_price": monthly["price_used"],
         }
 
-    async def _month_totals(self) -> dict[str, float | None]:
+    async def _month_totals(self, prices: dict[str, float]) -> dict:
         """Consommation du mois en cours (delta des statistiques sur le mois)."""
         now = datetime.now(PARIS)
         start = datetime(now.year, now.month, 1, 0, 0, tzinfo=PARIS)
@@ -117,14 +119,38 @@ class RgdsCoordinator(DataUpdateCoordinator[dict]):
 
         volume = chg(self.stat_volume)
         energy = chg(self.stat_energy)
-        # Coût : R-GDS publie le prix du mois (marker-price) avec du retard. S'il
-        # y a eu de la conso mais aucune ligne de coût, c'est que le prix manque
-        # -> « inconnu », surtout PAS 0 € (ce serait affirmer un gaz gratuit).
-        # 0 uniquement si rien n'a encore été consommé, comme volume/énergie.
-        cost_rows = stats.get(self.stat_cost, [])
-        cost = chg(self.stat_cost) if cost_rows else (None if energy else 0.0)
 
-        return {"volume": volume, "energy": energy, "cost": cost}
+        # Coût : R-GDS publie le prix du mois (marker-price) avec du retard, donc
+        # en cours de mois il y a de la conso mais aucune ligne de coût.
+        #  - lignes présentes            -> coût RÉEL
+        #  - conso mais pas encore de prix -> ESTIMATION au dernier prix connu,
+        #    marquée comme telle (affichage uniquement : la statistique
+        #    rgds:*_cost n'est JAMAIS alimentée avec une estimation, donc le
+        #    tableau de bord Énergie et l'historique restent factuels).
+        #  - rien de consommé            -> 0, comme volume/énergie.
+        cost_rows = stats.get(self.stat_cost, [])
+        estimated = False
+        price_used = None
+        if cost_rows:
+            cost = chg(self.stat_cost)
+        elif energy:
+            last_month = max(prices) if prices else None
+            price_used = prices.get(last_month) if last_month else None
+            if price_used:
+                cost = round(energy * price_used, 3)
+                estimated = True
+            else:
+                cost = None  # aucun prix connu du tout -> inconnu, pas de 0 €
+        else:
+            cost = 0.0
+
+        return {
+            "volume": volume,
+            "energy": energy,
+            "cost": cost,
+            "estimated": estimated,
+            "price_used": price_used,
+        }
 
     # ------------------------------------------------------------------ #
     async def _last_real_reading(self) -> Reading | None:

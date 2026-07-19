@@ -99,7 +99,7 @@ class RgdsCoordinator(DataUpdateCoordinator[dict]):
             "monthly_cost": monthly["cost"],
         }
 
-    async def _month_totals(self) -> dict[str, float]:
+    async def _month_totals(self) -> dict[str, float | None]:
         """Consommation du mois en cours (delta des statistiques sur le mois)."""
         now = datetime.now(PARIS)
         start = datetime(now.year, now.month, 1, 0, 0, tzinfo=PARIS)
@@ -115,11 +115,16 @@ class RgdsCoordinator(DataUpdateCoordinator[dict]):
             rows = stats.get(sid, [])
             return round(sum((r.get("change") or 0) for r in rows), 3)
 
-        return {
-            "volume": chg(self.stat_volume),
-            "energy": chg(self.stat_energy),
-            "cost": chg(self.stat_cost),
-        }
+        volume = chg(self.stat_volume)
+        energy = chg(self.stat_energy)
+        # Coût : R-GDS publie le prix du mois (marker-price) avec du retard. S'il
+        # y a eu de la conso mais aucune ligne de coût, c'est que le prix manque
+        # -> « inconnu », surtout PAS 0 € (ce serait affirmer un gaz gratuit).
+        # 0 uniquement si rien n'a encore été consommé, comme volume/énergie.
+        cost_rows = stats.get(self.stat_cost, [])
+        cost = chg(self.stat_cost) if cost_rows else (None if energy else 0.0)
+
+        return {"volume": volume, "energy": energy, "cost": cost}
 
     # ------------------------------------------------------------------ #
     async def _last_real_reading(self) -> Reading | None:

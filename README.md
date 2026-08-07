@@ -1,5 +1,9 @@
 # R-GDS pour Home Assistant
 
+[![HACS Default](https://img.shields.io/badge/HACS-Default-blue.svg)](https://github.com/hacs/default)
+[![Release](https://img.shields.io/github/v/release/cneuen/ha-rgds)](https://github.com/cneuen/ha-rgds/releases)
+[![Licence](https://img.shields.io/github/license/cneuen/ha-rgds)](LICENSE)
+
 Intégration **Home Assistant** pour [**R-GDS**](https://www.r-gds.fr/) (Gaz de Strasbourg),
 via le portail client *monespace*. Elle récupère automatiquement votre
 consommation de gaz et l'injecte dans le tableau de bord **Énergie**
@@ -18,7 +22,10 @@ consommation de gaz et l'injecte dans le tableau de bord **Énergie**
   - Énergie (kWh)
   - **Coût (€)** calculé au **prix mensuel réel** publié par R-GDS
 - **Capteurs** : prix du kWh, abonnement annuel, index compteur, date du dernier
-  relevé, consommation et énergie annuelles.
+  relevé, consommation et énergie annuelles, ainsi que **consommation, énergie et
+  coût du mois en cours**. Tant que R-GDS n'a pas publié le prix du mois courant,
+  le *coût du mois* est **estimé** au dernier prix connu (attribut `prix_estime`) —
+  cette estimation reste à l'affichage et **ne pollue jamais les statistiques**.
 - **Configuration par l'interface** (config flow) : e-mail + mot de passe, puis
   découverte automatique de vos compteurs (PCE).
 - **Options** : données lissées ou réelles ; inclusion (ou non) de l'abonnement
@@ -26,10 +33,21 @@ consommation de gaz et l'injecte dans le tableau de bord **Énergie**
 
 ## Installation
 
-### Via HACS (dépôt personnalisé)
-1. HACS → menu ⋮ → *Dépôts personnalisés*.
-2. Ajouter `https://github.com/cneuen/ha-rgds`, catégorie **Intégration**.
-3. Installer « R-GDS », puis **redémarrer** Home Assistant.
+### Via HACS (recommandé)
+
+L'intégration est disponible **directement dans HACS** (dépôt par défaut).
+
+[![Ouvrir dans HACS](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=cneuen&repository=ha-rgds&category=integration)
+
+1. HACS → recherchez **R-GDS**.
+2. Installez l'intégration, puis **redémarrez** Home Assistant.
+
+<details>
+<summary>Si elle n'apparaît pas encore (dépôt personnalisé)</summary>
+
+HACS → menu ⋮ → *Dépôts personnalisés* → ajoutez
+`https://github.com/cneuen/ha-rgds` (catégorie **Intégration**).
+</details>
 
 ### Manuelle
 Copier `custom_components/rgds/` dans le dossier `custom_components/` de votre
@@ -50,13 +68,15 @@ Au premier ajout, l'intégration **récupère tout l'historique disponible**
 
 ## Bon à savoir (limites de la donnée R-GDS)
 
-- **Délai J+1** : la conso d'un jour est publiée le lendemain soir (~20-21h).
-  L'intégration rafraîchit **au démarrage** et **chaque soir à 23h**.
+- **Délai J+1** : la conso d'un jour est publiée le lendemain (parfois J+2/J+3).
+  L'intégration rafraîchit **au démarrage** puis **toutes les heures**.
 - **Conso journalière arrondie au m³ entier** côté R-GDS (d'où des jours à 0 en
   été). L'agrégat reste juste sur le mois.
-- **Aucune donnée fabriquée** : l'énergie (kWh) n'est fournie par l'API que
-  depuis ~mi-2018, et l'historique de **prix** depuis ~mi-2025 — en deçà,
-  l'intégration **ne calcule pas** (pas d'estimation ni de prix par défaut).
+- **Statistiques sans donnée fabriquée** : l'énergie (kWh) n'est fournie par
+  l'API que depuis ~mi-2018, et l'historique de **prix** depuis ~mi-2025 — en
+  deçà, les statistiques **ne calculent pas** de coût (pas de prix par défaut).
+  La seule estimation est celle du capteur *coût du mois en cours* (voir plus
+  haut), qui est **affichée** mais jamais écrite dans les statistiques.
 
 ## Crédits
 

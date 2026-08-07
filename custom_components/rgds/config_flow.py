@@ -49,21 +49,28 @@ class RgdsConfigFlow(ConfigFlow, domain=DOMAIN):
         """Étape 1 : identifiants."""
         errors: dict[str, str] = {}
         if user_input is not None:
+            # espaces parasites d'un copier-coller d'email = cause fréquente
+            # de refus (l'identifiant R-GDS n'a jamais d'espace de bord)
+            username = user_input[CONF_USERNAME].strip()
+            password = user_input[CONF_PASSWORD]
             client = RgdsApiClient(
                 aiohttp_client.async_get_clientsession(self.hass),
-                user_input[CONF_USERNAME],
-                user_input[CONF_PASSWORD],
+                username,
+                password,
             )
             try:
                 await client.async_login()
                 subs = await client.async_get_subscriptions()
-            except RgdsAuthError:
+            except RgdsAuthError as err:
+                # message = réponse Keycloak (invalid_grant, compte non finalisé…)
+                _LOGGER.warning("R-GDS : authentification refusée (%s)", err)
                 errors["base"] = "invalid_auth"
-            except RgdsError:
+            except RgdsError as err:
+                _LOGGER.warning("R-GDS : connexion impossible (%s)", err)
                 errors["base"] = "cannot_connect"
             else:
-                self._username = user_input[CONF_USERNAME]
-                self._password = user_input[CONF_PASSWORD]
+                self._username = username
+                self._password = password
                 for sub in subs:
                     for m in sub.meters:
                         label = m.name

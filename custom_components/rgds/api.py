@@ -20,6 +20,9 @@ from .const import API_BASE, CLIENT_ID, TOKEN_URL
 
 _LOGGER = logging.getLogger(__name__)
 PARIS = ZoneInfo("Europe/Paris")
+# Timeout par requête : une requête bloquée côté R-GDS lève une RgdsError au
+# lieu de bloquer indéfiniment le coordinator (ou le setup de l'entrée).
+REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=60)
 
 
 class RgdsError(Exception):
@@ -102,11 +105,15 @@ class RgdsApiClient:
     # ---- Authentification ------------------------------------------------- #
     async def _token_request(self, data: dict[str, str]) -> dict:
         try:
-            async with self._session.post(TOKEN_URL, data=data) as resp:
+            async with self._session.post(
+                TOKEN_URL, data=data, timeout=REQUEST_TIMEOUT
+            ) as resp:
                 body = await resp.text()
                 if resp.status != 200:
                     raise RgdsAuthError(f"Token {resp.status}: {body[:200]}")
                 return await resp.json()
+        except TimeoutError as err:
+            raise RgdsError("Timeout (token)") from err
         except aiohttp.ClientError as err:
             raise RgdsError(f"Erreur réseau (token): {err}") from err
 
@@ -161,6 +168,7 @@ class RgdsApiClient:
                     "Authorization": f"Bearer {self._access_token}",
                     "Accept": "application/json",
                 },
+                timeout=REQUEST_TIMEOUT,
             ) as resp:
                 if resp.status == 401:
                     raise RgdsAuthError("401 (token rejeté)")
@@ -168,6 +176,8 @@ class RgdsApiClient:
                 if resp.status != 200:
                     raise RgdsError(f"GET {path} -> {resp.status}: {body[:200]}")
                 return await resp.json()
+        except TimeoutError as err:
+            raise RgdsError(f"Timeout ({path})") from err
         except aiohttp.ClientError as err:
             raise RgdsError(f"Erreur réseau ({path}): {err}") from err
 

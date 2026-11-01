@@ -1,6 +1,7 @@
 """Coordinator R-GDS : récupère la conso et alimente les statistiques HA."""
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime, timedelta
 
@@ -64,6 +65,8 @@ class RgdsCoordinator(DataUpdateCoordinator[dict]):
         self.stat_energy = f"{DOMAIN}:{slug}_energy"
         self.stat_cost = f"{DOMAIN}:{slug}_cost"
         self._name_prefix = f"R-GDS {meter_ref}".strip()
+        # Import de l'historique complet, lancé en tâche de fond (cf. _insert_statistics)
+        self._backfill_task: asyncio.Task | None = None
 
         @callback
         def _dummy() -> None:
@@ -200,6 +203,8 @@ class RgdsCoordinator(DataUpdateCoordinator[dict]):
 
     async def _insert_statistics(self, prices: dict[str, float], tariff) -> None:
         ids = {self.stat_volume, self.stat_energy, self.stat_cost}
+        if self._backfill_task and not self._backfill_task.done():
+            return  # import de l'historique en cours : il écrit seul les stats
         lasts: dict[str, list | None] = {}
         for sid in ids:
             st = await get_instance(self.hass).async_add_executor_job(
@@ -208,20 +213,62 @@ class RgdsCoordinator(DataUpdateCoordinator[dict]):
             lasts[sid] = st.get(sid) if st else None
         now = datetime.now(PARIS).replace(tzinfo=None)
 
-        # backfill si AU MOINS une des 3 stats est absente (évite les désyncs)
+        # backfill si AU MOINS une des 3 stats est absente (évite les désyncs).
+        # Tout l'historique = une requête par mois (des centaines possibles) :
+        # trop long pour le setup de l'entrée, que HA annule au bout de 300 s
+        # (issue #3). On le lance donc en tâche de fond ; les capteurs, eux,
+        # sont disponibles tout de suite.
         if not all(lasts.values()):
-            win_start = await self._backfill_start(now)
-            _LOGGER.debug("R-GDS: backfill complet depuis %s", win_start.date())
-            base = {sid: 0.0 for sid in ids}
-        else:
-            last_ts = lasts[self.stat_volume][0]["start"]
-            win_start_dt = datetime.fromtimestamp(last_ts, PARIS) - timedelta(days=REFRESH_DAYS)
-            win_start = win_start_dt.replace(tzinfo=None)
-            base = await self._sum_before(
-                datetime(win_start.year, win_start.month, win_start.day, 0, 0, tzinfo=PARIS),
-                ids,
-            )
+            self._start_backfill(now, prices, tariff)
+            return
 
+        last_ts = lasts[self.stat_volume][0]["start"]
+        win_start_dt = datetime.fromtimestamp(last_ts, PARIS) - timedelta(days=REFRESH_DAYS)
+        win_start = win_start_dt.replace(tzinfo=None)
+        base = await self._sum_before(
+            datetime(win_start.year, win_start.month, win_start.day, 0, 0, tzinfo=PARIS),
+            ids,
+        )
+        await self._import(win_start, now, base, prices, tariff)
+
+    def _start_backfill(self, now: datetime, prices: dict[str, float], tariff) -> None:
+        coro = self._backfill(now, prices, tariff)
+        name = f"{DOMAIN} backfill {self._pce}"
+        if self.config_entry is not None:
+            # annulée automatiquement au déchargement de l'entrée
+            self._backfill_task = self.config_entry.async_create_background_task(
+                self.hass, coro, name
+            )
+        else:
+            self._backfill_task = self.hass.async_create_background_task(coro, name)
+
+    async def _backfill(self, now: datetime, prices: dict[str, float], tariff) -> None:
+        """Import de tout l'historique (cumuls depuis 0), hors du setup."""
+        try:
+            win_start = await self._backfill_start(now)
+            _LOGGER.info("R-GDS: import de l'historique depuis %s (en arrière-plan)",
+                         win_start.date())
+            base = {sid: 0.0 for sid in (self.stat_volume, self.stat_energy, self.stat_cost)}
+            await self._import(win_start, now, base, prices, tariff)
+        except Exception as err:  # noqa: BLE001
+            # pas de stats écrites -> nouvel essai au prochain refresh horaire
+            _LOGGER.warning("R-GDS: échec de l'import de l'historique (%s), "
+                            "nouvel essai au prochain rafraîchissement", err)
+            return
+        # attend que le recorder ait écrit les stats, puis rafraîchit les
+        # capteurs (cumuls du mois) — sans quoi le refresh relancerait l'import
+        await get_instance(self.hass).async_block_till_done()
+        _LOGGER.info("R-GDS: import de l'historique terminé")
+        await self.async_request_refresh()
+
+    async def _import(
+        self,
+        win_start: datetime,
+        now: datetime,
+        base: dict[str, float],
+        prices: dict[str, float],
+        tariff,
+    ) -> None:
         reads = await self.client.async_get_consumption(
             self._sub, self._pce, win_start, now, smoothing=self._smoothing
         )

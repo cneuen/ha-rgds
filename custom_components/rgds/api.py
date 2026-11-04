@@ -7,6 +7,7 @@ consommation, l'historique mensuel des prix et les infos d'abonnement.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
@@ -22,7 +23,12 @@ _LOGGER = logging.getLogger(__name__)
 PARIS = ZoneInfo("Europe/Paris")
 # Timeout par requête : une requête bloquée côté R-GDS lève une RgdsError au
 # lieu de bloquer indéfiniment le coordinator (ou le setup de l'entrée).
-REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=60)
+# Une réponse normale prend ~0,1 s ; quand le backend R-GDS se bloque, il ne
+# coupe la connexion qu'au bout de ~60 s (issue #3) -> on échoue vite et on
+# réessaie plutôt que d'attendre.
+REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=20)
+RETRY_ATTEMPTS = 3
+RETRY_DELAY = 5  # secondes entre deux essais
 
 
 class RgdsError(Exception):
@@ -31,6 +37,10 @@ class RgdsError(Exception):
 
 class RgdsAuthError(RgdsError):
     """Échec d'authentification (identifiants invalides, token refusé)."""
+
+
+class RgdsTemporaryError(RgdsError):
+    """Panne passagère côté R-GDS (coupure, timeout, 5xx) : à réessayer."""
 
 
 # --------------------------------------------------------------------------- #
@@ -160,6 +170,17 @@ class RgdsApiClient:
         await self.async_login()
 
     async def _get(self, path: str) -> any:
+        """GET avec nouvel essai sur les pannes passagères de R-GDS."""
+        for attempt in range(1, RETRY_ATTEMPTS + 1):
+            try:
+                return await self._get_once(path)
+            except RgdsTemporaryError as err:
+                if attempt == RETRY_ATTEMPTS:
+                    raise
+                _LOGGER.debug("R-GDS: %s, essai %d/%d", err, attempt, RETRY_ATTEMPTS)
+                await asyncio.sleep(RETRY_DELAY)
+
+    async def _get_once(self, path: str) -> any:
         await self._ensure_token()
         try:
             async with self._session.get(
@@ -173,13 +194,15 @@ class RgdsApiClient:
                 if resp.status == 401:
                     raise RgdsAuthError("401 (token rejeté)")
                 body = await resp.text()
+                if resp.status >= 500:
+                    raise RgdsTemporaryError(f"GET {path} -> {resp.status}: {body[:200]}")
                 if resp.status != 200:
                     raise RgdsError(f"GET {path} -> {resp.status}: {body[:200]}")
                 return await resp.json()
         except TimeoutError as err:
-            raise RgdsError(f"Timeout ({path})") from err
+            raise RgdsTemporaryError(f"Timeout ({path})") from err
         except aiohttp.ClientError as err:
-            raise RgdsError(f"Erreur réseau ({path}): {err}") from err
+            raise RgdsTemporaryError(f"Erreur réseau ({path}): {err}") from err
 
     # ---- Découverte ------------------------------------------------------- #
     async def async_get_subscriptions(self) -> list[Subscription]:

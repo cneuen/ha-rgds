@@ -19,10 +19,10 @@ from homeassistant.components.recorder.util import get_instance
 from homeassistant.const import CURRENCY_EURO, UnitOfEnergy, UnitOfVolume
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed
-from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import slugify
 
-from .api import RgdsApiClient, RgdsAuthError, Reading
+from .api import RgdsApiClient, RgdsAuthError, RgdsError, Reading
 from .const import DOMAIN, PARIS
 
 _LOGGER = logging.getLogger(__name__)
@@ -78,21 +78,49 @@ class RgdsCoordinator(DataUpdateCoordinator[dict]):
     # ------------------------------------------------------------------ #
     async def _async_update_data(self) -> dict:
         try:
-            await self.client.async_login()
+            return await self._fetch()
         except RgdsAuthError as err:
             raise ConfigEntryAuthFailed(str(err)) from err
+        except RgdsError as err:
+            # panne R-GDS : une ligne claire plutôt qu'une trace « Unexpected error »
+            raise UpdateFailed(f"R-GDS indisponible : {err}") from err
+
+    async def _keep_last(self, key: str, coro, valid=lambda prev: True):
+        """Tarif/prix/annuel changent rarement : si R-GDS échoue, on garde la
+        dernière valeur RÉELLEMENT reçue (pas une estimation) plutôt que de
+        rendre tous les capteurs indisponibles. Sans valeur précédente
+        (premier chargement), l'échec remonte."""
+        try:
+            return await coro
+        except RgdsAuthError:
+            raise
+        except RgdsError as err:
+            if self.data and key in self.data and valid(self.data[key]):
+                _LOGGER.warning("R-GDS: %s indisponible (%s), dernière valeur conservée",
+                                key, err)
+                return self.data[key]
+            raise
+
+    async def _fetch(self) -> dict:
+        await self.client.async_login()
 
         # données « instantanées » pour les capteurs
-        tariff = await self.client.async_get_tariff(self._sub, self._pce)
-        prices = await self.client.async_get_prices(self._sub, self._pce)
+        tariff = await self._keep_last(
+            "tariff", self.client.async_get_tariff(self._sub, self._pce))
+        prices = await self._keep_last(
+            "prices", self.client.async_get_prices(self._sub, self._pce))
         year = datetime.now(PARIS).year
-        yearly = await self.client.async_get_yearly(self._sub, self._pce, year)
+        # l'agrégat annuel de l'an passé ne vaut pas pour la nouvelle année
+        yearly = await self._keep_last(
+            "yearly", self.client.async_get_yearly(self._sub, self._pce, year),
+            valid=lambda prev: prev is not None and str(prev.date or "")[:4] == str(year))
 
         await self._insert_statistics(prices, tariff)
 
         last_reading = await self._last_real_reading()
         monthly = await self._month_totals(prices)
         return {
+            "prices": prices,
             "tariff": tariff,
             "yearly": yearly,
             "last_reading": last_reading,

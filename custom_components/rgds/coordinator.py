@@ -22,7 +22,7 @@ from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import slugify
 
-from .api import RgdsApiClient, RgdsAuthError, RgdsError, Reading
+from .api import RgdsApiClient, RgdsAuthError, RgdsError, RgdsTemporaryError, Reading
 from .const import DOMAIN, PARIS
 
 _LOGGER = logging.getLogger(__name__)
@@ -67,6 +67,8 @@ class RgdsCoordinator(DataUpdateCoordinator[dict]):
         self._name_prefix = f"R-GDS {meter_ref}".strip()
         # Import de l'historique complet, lancé en tâche de fond (cf. _insert_statistics)
         self._backfill_task: asyncio.Task | None = None
+        # Coupe-circuit : R-GDS en panne pendant ce refresh -> on n'insiste pas
+        self._down = False
 
         @callback
         def _dummy() -> None:
@@ -85,39 +87,66 @@ class RgdsCoordinator(DataUpdateCoordinator[dict]):
             # panne R-GDS : une ligne claire plutôt qu'une trace « Unexpected error »
             raise UpdateFailed(f"R-GDS indisponible : {err}") from err
 
-    async def _keep_last(self, key: str, coro, valid=lambda prev: True):
+    async def _call(self, coro):
+        """Coupe-circuit : quand R-GDS tombe, tous ses appels échouent ensemble
+        (constaté). Après un premier échec confirmé (3 essais), les appels
+        suivants de ce refresh sont sautés au lieu d'insister ~5 min sur un
+        serveur déjà en difficulté. Réarmé au refresh suivant."""
+        if self._down:
+            coro.close()
+            raise RgdsTemporaryError("appel sauté, R-GDS en panne")
+        try:
+            return await coro
+        except RgdsTemporaryError:
+            self._down = True
+            raise
+
+    async def _keep_last(self, key: str, coro, kept: list[str], valid=lambda prev: True):
         """Tarif/prix/annuel changent rarement : si R-GDS échoue, on garde la
         dernière valeur RÉELLEMENT reçue (pas une estimation) plutôt que de
         rendre tous les capteurs indisponibles. Sans valeur précédente
         (premier chargement), l'échec remonte."""
         try:
-            return await coro
+            return await self._call(coro)
         except RgdsAuthError:
             raise
-        except RgdsError as err:
+        except RgdsError:
             if self.data and key in self.data and valid(self.data[key]):
-                _LOGGER.warning("R-GDS: %s indisponible (%s), dernière valeur conservée",
-                                key, err)
+                kept.append(key)
                 return self.data[key]
             raise
 
     async def _fetch(self) -> dict:
-        await self.client.async_login()
+        self._down = False
+        await self._call(self.client.async_login())
 
         # données « instantanées » pour les capteurs
+        kept: list[str] = []
         tariff = await self._keep_last(
-            "tariff", self.client.async_get_tariff(self._sub, self._pce))
+            "tariff", self.client.async_get_tariff(self._sub, self._pce), kept)
         prices = await self._keep_last(
-            "prices", self.client.async_get_prices(self._sub, self._pce))
+            "prices", self.client.async_get_prices(self._sub, self._pce), kept)
         year = datetime.now(PARIS).year
         # l'agrégat annuel de l'an passé ne vaut pas pour la nouvelle année
         yearly = await self._keep_last(
-            "yearly", self.client.async_get_yearly(self._sub, self._pce, year),
-            valid=lambda prev: prev is not None and str(prev.date or "")[:4] == str(year))
+            "yearly", self.client.async_get_yearly(self._sub, self._pce, year), kept,
+            valid=lambda prev: prev is None or str(prev.date or "")[:4] == str(year))
 
-        await self._insert_statistics(prices, tariff)
+        # Conso : même principe. Si R-GDS tombe et qu'on a déjà des données, on
+        # garde le dernier relevé ; les statistiques ne sont pas touchées et la
+        # fenêtre REFRESH_DAYS du prochain refresh comble le trou (rien de perdu).
+        try:
+            await self._insert_statistics(prices, tariff)
+            last_reading = await self._call(self._last_real_reading())
+        except RgdsTemporaryError:
+            if not (self.data and "last_reading" in self.data):
+                raise
+            kept.append("consumption")
+            last_reading = self.data["last_reading"]
 
-        last_reading = await self._last_real_reading()
+        if kept:
+            _LOGGER.warning("R-GDS en panne, dernières valeurs conservées (%s) ; "
+                            "nouvel essai au prochain rafraîchissement", ", ".join(kept))
         monthly = await self._month_totals(prices)
         return {
             "prices": prices,
@@ -257,7 +286,7 @@ class RgdsCoordinator(DataUpdateCoordinator[dict]):
             datetime(win_start.year, win_start.month, win_start.day, 0, 0, tzinfo=PARIS),
             ids,
         )
-        await self._import(win_start, now, base, prices, tariff)
+        await self._call(self._import(win_start, now, base, prices, tariff))
 
     def _start_backfill(self, now: datetime, prices: dict[str, float], tariff) -> None:
         coro = self._backfill(now, prices, tariff)
@@ -277,7 +306,7 @@ class RgdsCoordinator(DataUpdateCoordinator[dict]):
             _LOGGER.info("R-GDS: import de l'historique depuis %s (en arrière-plan)",
                          win_start.date())
             base = {sid: 0.0 for sid in (self.stat_volume, self.stat_energy, self.stat_cost)}
-            await self._import(win_start, now, base, prices, tariff)
+            await self._import(win_start, now, base, prices, tariff, gentle=True)
         except Exception as err:  # noqa: BLE001
             # pas de stats écrites -> nouvel essai au prochain refresh horaire
             _LOGGER.warning("R-GDS: échec de l'import de l'historique (%s), "
@@ -296,9 +325,11 @@ class RgdsCoordinator(DataUpdateCoordinator[dict]):
         base: dict[str, float],
         prices: dict[str, float],
         tariff,
+        gentle: bool = False,
     ) -> None:
         reads = await self.client.async_get_consumption(
-            self._sub, self._pce, win_start, now, smoothing=self._smoothing
+            self._sub, self._pce, win_start, now, smoothing=self._smoothing,
+            gentle=gentle,
         )
         if not reads:
             _LOGGER.debug("R-GDS: aucune donnée sur la fenêtre")

@@ -29,6 +29,14 @@ PARIS = ZoneInfo("Europe/Paris")
 REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=20)
 RETRY_ATTEMPTS = 3
 RETRY_DELAY = 5  # secondes entre deux essais
+# Import de l'historique (des centaines de requêtes, ~5 s chacune côté R-GDS) :
+# on ménage un backend fragile. Pause entre deux mois, plus longue s'il
+# ralentit ; en cas de panne, on patiente puis on reprend au même mois.
+BACKFILL_PAUSE = 3
+BACKFILL_SLOW_REQUEST = 10  # s : au-delà, R-GDS peine -> pause longue
+BACKFILL_SLOW_PAUSE = 30
+BACKFILL_OUTAGE_WAIT = 300
+BACKFILL_OUTAGE_MAX = 6  # 6 x 5 min de patience par mois avant abandon
 
 
 class RgdsError(Exception):
@@ -111,6 +119,7 @@ class RgdsApiClient:
         self._refresh_token: str | None = None
         self._access_exp: float = 0.0
         self._refresh_exp: float = 0.0
+        self._next_pause: float = BACKFILL_PAUSE
 
     # ---- Authentification ------------------------------------------------- #
     async def _token_request(self, data: dict[str, str]) -> dict:
@@ -259,11 +268,13 @@ class RgdsApiClient:
         dfrom: datetime,
         dto: datetime,
         smoothing: bool = False,
+        gentle: bool = False,
     ) -> list[Reading]:
         """Consommation jour par jour entre deux dates (découpe par mois pour
-        forcer la granularité journalière)."""
+        forcer la granularité journalière). `gentle` : mode import de
+        l'historique (pauses entre les mois, patience pendant les pannes)."""
         out: dict[str, Reading] = {}
-        for a, b in self._month_chunks(dfrom, dto):
+        for i, (a, b) in enumerate(self._month_chunks(dfrom, dto)):
             f, _ = self._day_bounds(a)
             _, t = self._day_bounds(b)
             path = (
@@ -271,7 +282,10 @@ class RgdsApiClient:
                 f"?fromDate={quote(f)}&toDate={quote(t)}"
                 f"&dataSmoothing={'true' if smoothing else 'false'}"
             )
-            data = await self._get(path)
+            if not gentle:
+                data = await self._get(path)
+            else:
+                data = await self._get_gently(path, a, first=i == 0)
             for c in (data or {}).get("consumptions", []):
                 if not c.get("startDate"):
                     continue
@@ -284,6 +298,25 @@ class RgdsApiClient:
                     generated=bool(c.get("generated")),
                 )
         return [out[k] for k in sorted(out)]
+
+    async def _get_gently(self, path: str, month: datetime, first: bool) -> any:
+        if not first:
+            await asyncio.sleep(self._next_pause)
+        for outage in range(BACKFILL_OUTAGE_MAX + 1):
+            start = time.monotonic()
+            try:
+                data = await self._get(path)
+            except RgdsTemporaryError as err:
+                if outage == BACKFILL_OUTAGE_MAX:
+                    raise
+                _LOGGER.info("R-GDS: panne pendant l'import (%s), reprise au mois "
+                             "%s dans %d min", err, month.strftime("%Y-%m"),
+                             BACKFILL_OUTAGE_WAIT // 60)
+                await asyncio.sleep(BACKFILL_OUTAGE_WAIT)
+                continue
+            slow = time.monotonic() - start > BACKFILL_SLOW_REQUEST
+            self._next_pause = BACKFILL_SLOW_PAUSE if slow else BACKFILL_PAUSE
+            return data
 
     async def async_get_yearly(
         self, subscription_id: str, pce_id: str, year: int
